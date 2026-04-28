@@ -1,0 +1,18 @@
+# ─────────────────────────────────────────────────────
+# Tema corporativo STARS REI
+# Inspirado en la paleta del sitio web de STARS REI:
+# azul oscuro como primario, fondo claro, tipografía sans-serif.
+# ─────────────────────────────────────────────────────
+
+[theme]
+primaryColor = "#1B3A5C"          # Azul oscuro STARS REI (botones, acentos)
+backgroundColor = "#FFFFFF"        # Fondo principal blanco limpio
+secondaryBackgroundColor = "#F0F4F8"  # Fondo secundario (sidebar, cards) gris azulado
+textColor = "#1A1A2E"             # Texto principal oscuro
+font = "sans serif"               # Fuente profesional sans-serif
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

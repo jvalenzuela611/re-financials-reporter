@@ -1,0 +1,43 @@
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Cache de Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.eggs/
+*.egg-info/
+
+# Secretos y variables de entorno
+.env
+.env.local
+*.env
+
+# Archivos Windows específicos
+*.bat
+Thumbs.db
+desktop.ini
+
+# Git
+.git/
+.gitignore
+
+# Claude Code
+.claude/
+
+# Archivos temporales
+*.tmp
+*.log
+outputs/
+output/
+
+# Docs y scripts internos (no necesarios en el contenedor)
+docs/
+scripts/
+
+# Archivos de desarrollo local
+diagnostic.py
+LEEME.md

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# Variables de entorno / secretos
+.env
+.env.local
+*.env
+
+# Claude Code (configuración local — no compartir)
+.claude/settings.local.json
+
+# Archivos temporales / sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.log
+
+# Outputs generados (no son parte del código)
+outputs/
+output/
+*.pdf
