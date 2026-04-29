@@ -590,6 +590,11 @@ ASSET_ALIASES = {
     "walnut street wellesley owner": "Walnut Street Wellesley",
     "walnut street wellesley": "Walnut Street Wellesley",
     "walnut street": "Walnut Street Wellesley",
+    # NWEP-Summary format (archivos 'Resultado Walnut' / 'EERR')
+    "summary newton wellesley executive office park": "Walnut Street Wellesley",
+    "summary newton wellesley": "Walnut Street Wellesley",
+    "newton wellesley executive office park": "Walnut Street Wellesley",
+    "newton wellesley": "Walnut Street Wellesley",
     "the wilcox (pn10680)": "The Wilcox",
     "the wilcox": "The Wilcox",
     "wilcox": "The Wilcox",

@@ -570,22 +570,65 @@ def get_sheet_candidates(filepath: Path) -> List[Dict]:
     return candidates
 
 
-def _is_summary_output_format(ws) -> bool:
+# ─────────────────────────────────────────
+# FORMATO NWEP-SUMMARY (Resultado Walnut / EERR — Walnut Street Wellesley)
+# ─────────────────────────────────────────
+#
+# Layout: archivo 'Resultado Walnut XX-YYYY.xlsx' o 'EERR XX-YYYY.xlsx'.
+# El socio manda categorías a nivel L2 (Salaries, Utilities, Repairs &
+# Maintenance, etc.) en col A y montos PTD/YTD en cols B–G. NO hay códigos
+# GL — el parser sintetiza account codes 'SUM:<slug>' que se mapean al
+# catálogo de Walnut Street Wellesley.
+
+# Mapeo de descripción L2 -> (L1, L2 canónico). Las descripciones se
+# normalizan a lowercase para el match. Si una descripción no está acá, la
+# fila cae al fallback global (que típicamente la deja sin clasificar).
+_NWEP_SUMMARY_L1_MAP = {
+    # ── Income (above 'Total Income')
+    'retail-base':              ('Income', 'Rental Income'),
+    'commercial-base':          ('Income', 'Rental Income'),
+    'percentage rents':         ('Income', 'Rental Income'),
+    'lease term concessions':   ('Income', 'Concessions and Vacancy'),
+    'total recovery income':    ('Income', 'Other Income'),
+    'other income':             ('Income', 'Other Income'),
+    'non operating income':     ('Income', 'Other Income'),
+    # ── Operating Expenses (between 'Total Income' y 'Total Operating Expenses')
+    'salaries':                 ('Operating Expenses', 'Payroll and Related'),
+    'utilities':                ('Operating Expenses', 'Utilities'),
+    'repairs & maintenance':    ('Operating Expenses', 'Repairs and Maintenance'),
+    'project administration':   ('Operating Expenses', 'Property G & A'),
+    'management fees':          ('Operating Expenses', 'Management Fees'),
+    'insurance premiums':       ('Operating Expenses', 'Insurance'),
+    'non recoverable costs':    ('Operating Expenses', 'Property G & A'),
+    # ── Real Estate Taxes (L1 separada por convención)
+    'real estate taxes':        ('Real Estate Taxes', 'Property Taxes'),
+    # ── Below NOI — Non-Operating
+    'annual audit':                     ('Non-Operating Expenses', 'Company General & Administrative'),
+    'ownership costs/asset mgt fees':   ('Non-Operating Expenses', 'Company General & Administrative'),
+    'ownership costs/asset mgmt':       ('Non-Operating Expenses', 'Company General & Administrative'),
+    'ownership costs/asset':            ('Non-Operating Expenses', 'Company General & Administrative'),
+    'organizational expenses':          ('Non-Operating Expenses', 'Company General & Administrative'),
+    'organizational expense':           ('Non-Operating Expenses', 'Company General & Administrative'),
+    'partnership rel-other':            ('Non-Operating Expenses', 'Company General & Administrative'),
+    'tax annual rpt filing fee':        ('Non-Operating Expenses', 'Company General & Administrative'),
+    'tax annual rpt filing':            ('Non-Operating Expenses', 'Company General & Administrative'),
+    'project bad debt exp':             ('Non-Operating Expenses', 'Bad Debt'),
+    'unrealized gain/loss':             ('Non-Operating Expenses', 'Unrealized Gain/Loss'),
+    'amortize expense':                 ('Non-Operating Expenses', 'Depreciation/Amortization'),
+    # ── Below NOI — Interest
+    'mortgage int-perm':                ('Interest Expense', 'Interest and Financing Expenses'),
+    'finan cost-legal':                 ('Interest Expense', 'Interest and Financing Expenses'),
+}
+
+
+def _is_nwep_summary_format(ws) -> bool:
     """
-    Detecta archivos de SUMMARY/output (no son archivos de origen del socio).
-
-    Estos archivos típicamente vienen del propio analista o de un step posterior
-    del proceso, no del socio. No tienen códigos GL — solo categorías L2 (Salaries,
-    Utilities, etc.) en col A y montos en cols B+.
-
-    Si se ingieren, el detector CMC los toma como falso positivo (porque tienen
-    "PTD Actual" en headers) pero el parser los lee con offsets equivocados y
-    produce 0 líneas L1 y 30 L3 corruptas — sin error visible.
+    Detecta el formato SUMMARY usado por NWEP/Walnut Street Wellesley.
 
     Firma:
-      - Row 1, col A empieza con "SUMMARY "
-      - Row 5, col A == "Month"
-      - Row 5, col B contiene "Actual" (típicamente "PTD Actual")
+      - Row 1, col A empieza con 'SUMMARY '
+      - Row 5, col A == 'Month'
+      - Row 5, col B contiene 'Actual' (típicamente 'PTD Actual')
     """
     r1 = ws.cell(row=1, column=1).value
     r5c1 = ws.cell(row=5, column=1).value
@@ -599,6 +642,148 @@ def _is_summary_output_format(ws) -> bool:
         s1.upper().startswith('SUMMARY ') and
         s5c1 == 'month' and
         'actual' in s5c2
+    )
+
+
+def _ingest_nwep_summary_sheet(ws, filepath: Path, sheet_info: Dict) -> IngestedFile:
+    """
+    Parser para formato SUMMARY de NWEP/Walnut Street Wellesley.
+
+    Layout:
+      - Row 1, col A: 'SUMMARY <nombre activo>'
+      - Row 2, col A: período (datetime)
+      - Row 5: headers ['Month', 'PTD Actual', 'PTD Budget', 'Variance',
+                         'YTD Actual', 'YTD Budget', 'Variance']
+      - Row 6+: datos. Cada fila es L2-level (no GL). Algunas filas son totales
+        L1 ('Total Income', 'Total Operating Expenses', 'Net Operating Income').
+
+    Sintetiza account codes 'SUM:<slug>' para cada descripción para que el
+    catálogo pueda mapear consistentemente. Filas no listadas en el catálogo
+    caen al fallback estándar.
+    """
+    import datetime as _dt
+
+    # Building & período
+    building = ""
+    v1 = ws.cell(row=1, column=1).value
+    if v1:
+        building = str(v1).strip()
+    period_label = ""
+    v2 = ws.cell(row=2, column=1).value
+    if isinstance(v2, (_dt.datetime, _dt.date)):
+        period_label = v2.strftime("%Y-%m-%d")
+    elif v2:
+        period_label = str(v2).strip()
+
+    # Layout fijo
+    desc_col = 1
+    actual_curr = 2
+    budget_curr = 3
+    actual_ytd = 5
+    budget_ytd = 6
+    header_row = 5
+
+    # Filas que son L1 totals
+    L1_TOTALS = {
+        'total income': 'Income',
+        'total operating expenses': 'Operating Expenses',  # primera ocurrencia (above NOI)
+        'net operating income': 'NOI',
+        'net income': 'Net Income',
+    }
+
+    # Filas que NO son data — son subtotales intermedios o labels que el pipeline
+    # NO debe contar (la suma se reconstruye desde sus componentes).
+    SKIP_LABELS = {
+        'total operating expens',         # truncado: subtotal Non-Op + Interest
+        'total operating expense other',  # versión no truncada del mismo subtotal
+    }
+
+    rows = []
+    section_totals = []
+    seen_l1 = set()
+
+    max_row = ws.max_row or 50
+    for i in range(header_row + 1, max_row + 1):
+        desc_val = ws.cell(row=i, column=desc_col).value
+        actual_c = ws.cell(row=i, column=actual_curr).value
+        budget_c = ws.cell(row=i, column=budget_curr).value
+        actual_y = ws.cell(row=i, column=actual_ytd).value
+        budget_y = ws.cell(row=i, column=budget_ytd).value
+
+        has_values = isinstance(actual_c, (int, float)) or isinstance(budget_c, (int, float))
+        if desc_val is None and not has_values:
+            continue
+
+        desc_str = str(desc_val).strip() if desc_val is not None else ""
+        if not desc_str:
+            continue
+
+        desc_lower = desc_str.lower()
+
+        # Skip labels (subtotales que no son L1)
+        if desc_lower in SKIP_LABELS:
+            rows.append({
+                'row_num': i, 'description': desc_str, 'account': "",
+                'budget_current': _to_float(budget_c), 'actual_current': _to_float(actual_c),
+                'budget_ytd': _to_float(budget_y), 'actual_ytd': _to_float(actual_y),
+                'row_type': 'label', 'source_file': filepath.name,
+            })
+            continue
+
+        is_total_label = desc_lower in L1_TOTALS
+
+        # Segunda ocurrencia de "Total Operating Expenses" no es un L1 total real
+        if is_total_label and L1_TOTALS[desc_lower] in seen_l1:
+            is_total_label = False
+
+        if is_total_label:
+            l1_name = L1_TOTALS[desc_lower]
+            seen_l1.add(l1_name)
+            rows.append({
+                'row_num': i, 'description': desc_str, 'account': "",
+                'budget_current': _to_float(budget_c), 'actual_current': _to_float(actual_c),
+                'budget_ytd': _to_float(budget_y), 'actual_ytd': _to_float(actual_y),
+                'row_type': 'total', 'source_file': filepath.name,
+            })
+            section_totals.append({
+                'description': desc_str,
+                'budget_current': _to_float(budget_c), 'actual_current': _to_float(actual_c),
+                'budget_ytd': _to_float(budget_y), 'actual_ytd': _to_float(actual_y),
+                'row_num': i,
+            })
+        else:
+            # Data row: sintetizar account code 'SUM:<slug>'
+            slug = re.sub(r'[^a-z0-9]+', '-', desc_lower).strip('-')
+            account = f'SUM:{slug}'
+            rows.append({
+                'row_num': i, 'description': desc_str, 'account': account,
+                'budget_current': _to_float(budget_c), 'actual_current': _to_float(actual_c),
+                'budget_ytd': _to_float(budget_y), 'actual_ytd': _to_float(actual_y),
+                'row_type': 'data', 'source_file': filepath.name,
+            })
+
+    df = pd.DataFrame(rows)
+    return IngestedFile(
+        filename=filepath.name,
+        building=building,
+        period_label=period_label,
+        df=df,
+        partner_comments=[],
+        section_totals=section_totals,
+        metadata={
+            'header_row': header_row,
+            'total_rows': len(rows),
+            'data_rows': len([r for r in rows if r['row_type'] == 'data']),
+            'has_ytd': True,
+            'sheet_used': sheet_info.get('income_statement'),
+            'comments_sheet': None,
+            'format': 'NWEP-Summary',
+            'column_map': {
+                'desc_col': desc_col, 'acct_col': None,
+                'budget_curr': budget_curr, 'actual_curr': actual_curr,
+                'budget_ytd': budget_ytd, 'actual_ytd': actual_ytd,
+            },
+        }
     )
 
 
@@ -1744,23 +1929,16 @@ def ingest_single_file(filepath: Path, sheet_name: str = None) -> IngestedFile:
         sheet_info = detect_sheets(wb, filename=str(filepath.name))
     ws = wb[sheet_info['income_statement']]
 
-    # --- VALIDACIÓN PREVIA: archivos de output/summary ---
-    # Detecta archivos como "Resultado Walnut.xlsx" o "EERR XX-YYYY.xlsx" que NO son
-    # archivos de origen del socio sino summaries de etapas previas. El detector CMC
-    # los toma por falso positivo y el parser produce 0 L1 lines + L3 corruptos sin
-    # mensaje de error claro. Falla rápido con guía concreta para el analista.
-    if _is_summary_output_format(ws):
-        wb.close()
-        raise ValueError(
-            f"El archivo '{filepath.name}' parece ser un SUMMARY/output (con "
-            f"categorías a nivel L2 sin códigos GL), no un detalle del socio. "
-            f"Para este activo subí el archivo de origen del socio — típicamente "
-            f"'Budget Comparison Propiedad XX-YYYY.xlsx' (NWEP) o el reporte mensual "
-            f"detallado por GL. Si necesitás procesar este summary, contactá a Jaime "
-            f"para evaluar agregar un parser dedicado."
-        )
-
     # --- DISPATCH por formato ---
+    # NWEP-Summary debe chequearse PRIMERO porque tiene 'PTD Actual' en headers
+    # (lo que activaría el detector CMC como falso positivo). El detector NWEP
+    # es estricto (requiere 'SUMMARY ' en row 1 + 'Month' en row 5) → no hay
+    # falsos positivos cruzados.
+    if _is_nwep_summary_format(ws):
+        result = _ingest_nwep_summary_sheet(ws, filepath, sheet_info)
+        wb.close()
+        return result
+
     # Budget Comparison Report (501 Estates): checkea primero porque aunque "BCR" puede no ser
     # auto-detectada por el sheet scorer, si alguna hoja del workbook es BCR debemos usarla.
     if _is_bcr_format(ws):
