@@ -570,6 +570,38 @@ def get_sheet_candidates(filepath: Path) -> List[Dict]:
     return candidates
 
 
+def _is_summary_output_format(ws) -> bool:
+    """
+    Detecta archivos de SUMMARY/output (no son archivos de origen del socio).
+
+    Estos archivos típicamente vienen del propio analista o de un step posterior
+    del proceso, no del socio. No tienen códigos GL — solo categorías L2 (Salaries,
+    Utilities, etc.) en col A y montos en cols B+.
+
+    Si se ingieren, el detector CMC los toma como falso positivo (porque tienen
+    "PTD Actual" en headers) pero el parser los lee con offsets equivocados y
+    produce 0 líneas L1 y 30 L3 corruptas — sin error visible.
+
+    Firma:
+      - Row 1, col A empieza con "SUMMARY "
+      - Row 5, col A == "Month"
+      - Row 5, col B contiene "Actual" (típicamente "PTD Actual")
+    """
+    r1 = ws.cell(row=1, column=1).value
+    r5c1 = ws.cell(row=5, column=1).value
+    r5c2 = ws.cell(row=5, column=2).value
+    if r1 is None or r5c1 is None or r5c2 is None:
+        return False
+    s1 = str(r1).strip()
+    s5c1 = str(r5c1).strip().lower()
+    s5c2 = str(r5c2).strip().lower()
+    return (
+        s1.upper().startswith('SUMMARY ') and
+        s5c1 == 'month' and
+        'actual' in s5c2
+    )
+
+
 def _is_bcr_format(ws) -> bool:
     """
     Detecta formato Budget Comparison Report (usado por 501 Estates y similares).
@@ -1711,6 +1743,22 @@ def ingest_single_file(filepath: Path, sheet_name: str = None) -> IngestedFile:
     else:
         sheet_info = detect_sheets(wb, filename=str(filepath.name))
     ws = wb[sheet_info['income_statement']]
+
+    # --- VALIDACIÓN PREVIA: archivos de output/summary ---
+    # Detecta archivos como "Resultado Walnut.xlsx" o "EERR XX-YYYY.xlsx" que NO son
+    # archivos de origen del socio sino summaries de etapas previas. El detector CMC
+    # los toma por falso positivo y el parser produce 0 L1 lines + L3 corruptos sin
+    # mensaje de error claro. Falla rápido con guía concreta para el analista.
+    if _is_summary_output_format(ws):
+        wb.close()
+        raise ValueError(
+            f"El archivo '{filepath.name}' parece ser un SUMMARY/output (con "
+            f"categorías a nivel L2 sin códigos GL), no un detalle del socio. "
+            f"Para este activo subí el archivo de origen del socio — típicamente "
+            f"'Budget Comparison Propiedad XX-YYYY.xlsx' (NWEP) o el reporte mensual "
+            f"detallado por GL. Si necesitás procesar este summary, contactá a Jaime "
+            f"para evaluar agregar un parser dedicado."
+        )
 
     # --- DISPATCH por formato ---
     # Budget Comparison Report (501 Estates): checkea primero porque aunque "BCR" puede no ser
