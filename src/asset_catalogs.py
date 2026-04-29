@@ -1306,6 +1306,16 @@ ASSET_CATALOGS = {
             '820841': {"desc": 'O / P - Insurance', "l1": 'Total Capex', "l2": 'Capitalized Expenditures'},
             '820850': {"desc": 'O / P - Legal Fees', "l1": 'Total Capex', "l2": 'Capitalized Expenditures'},
             '820851': {"desc": 'O / P - Partnership Expenses', "l1": 'Total Capex', "l2": 'Capitalized Expenditures'},
+            # Cuentas adicionales identificadas en archivos Q1 2026 (parche feedback Florencia 28-Apr-2026):
+            # Bad Debt mal clasificado como Income causaba diff 2x en NOI calculado.
+            '410145': {"desc": 'Prior Period Rent Adjustment', "l1": 'Income', "l2": 'Rental Income'},
+            '635160': {"desc": 'HVAC Repairs', "l1": 'Operating Expenses', "l2": 'Repairs & Maintenance'},
+            '635605': {"desc": 'Tools/Equipment', "l1": 'Operating Expenses', "l2": 'Repairs & Maintenance'},
+            '665075': {"desc": 'Bad Debt Expense', "l1": 'Operating Expenses', "l2": 'BAD DEBT EXPENSE'},
+            '675365': {"desc": 'Other Fee', "l1": 'Interest Expense', "l2": 'Debt Service'},
+            '681290': {"desc": 'Prior Year Expense Adjustment', "l1": 'Non-Operating Expenses', "l2": 'Professional/Partnership'},
+            '820135': {"desc": 'Blinds & Drapes', "l1": 'Total Capex', "l2": 'Capitalized Expenditures'},
+            '820345': {"desc": 'Disposals', "l1": 'Total Capex', "l2": 'Capitalized Expenditures'},
         },
     },
     '929 Mass Ave (838)': {
