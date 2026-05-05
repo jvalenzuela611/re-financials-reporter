@@ -24,20 +24,18 @@ ASSET_CATALOG = {
         "description": "Individual — Edson House (295 29th Street, Oakland)",
     },
     # ── Activos individuales con capital de terceros ──────────────────────────
-    "Centro Callan": {
-        "buildings": ["Centro Callan"],
+    # Nota: las keys de este dict deben coincidir con los asset_keys de
+    # ASSET_CATALOGS (src/asset_catalogs.py) para que el resolver de catálogo
+    # haga match exacto y todas las cuentas vengan del catalog (sin fallback).
+    "14th & Callan Street JV LLC": {
+        "buildings": ["14th & Callan Street JV LLC"],
         "consolidate": False,
-        "description": "Individual — Centro Callan",
+        "description": "Individual — 14th & Callan Street JV LLC (Sares Regis)",
     },
-    "929 Mass": {
-        "buildings": ["929 Mass"],
+    "929 Mass Ave (838)": {
+        "buildings": ["929 Mass Ave (838)"],
         "consolidate": False,
-        "description": "Individual — 929 Mass",
-    },
-    "Newton Wellesley Executive Park": {
-        "buildings": ["Newton Wellesley Executive Park"],
-        "consolidate": False,
-        "description": "Individual — Newton Wellesley Executive Park",
+        "description": "Individual — 929 Mass Ave (838)",
     },
     "The Val": {
         "buildings": ["The Val"],
@@ -54,15 +52,15 @@ ASSET_CATALOG = {
         "consolidate": False,
         "description": "Individual — 624 Yale Apartments",
     },
-    "The Blockyard": {
-        "buildings": ["The Blockyard"],
+    "Bridge at the Blockyard": {
+        "buildings": ["Bridge at the Blockyard"],
         "consolidate": False,
-        "description": "Individual — The Blockyard",
+        "description": "Individual — Bridge at the Blockyard (CWS, 12-month budget)",
     },
     "Walnut Street Wellesley": {
         "buildings": ["Walnut Street Wellesley"],
         "consolidate": False,
-        "description": "Individual — Walnut Street Wellesley (Lincoln Property Co, JDE format)",
+        "description": "Individual — Walnut Street Wellesley / Newton Wellesley Executive Park (NWEP, JDE / Summary formats)",
     },
     # ── Ballard Portfolio (los números NUNCA se agregan — siempre individual) ─
     "KOI Apartments": {
