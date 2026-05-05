@@ -2161,16 +2161,276 @@ def _ingest_callan_sheet(ws, filepath: Path, sheet_info: Dict) -> IngestedFile:
     )
 
 
+# ─────────────────────────────────────────
+# FORMATO PDF — NWEP MONTHLY REPORT (Walnut Street Wellesley)
+# ─────────────────────────────────────────
+#
+# El socio (Lincoln Property Company) envía mensualmente un PDF con:
+#   - Page 1: SUMMARY a nivel L2 (mismo formato que el Excel 'EERR' / 'Resultado
+#             Walnut') — descripciones tipo 'Salaries', 'Utilities', etc.
+#   - Pages 2+: JDE detail con códigos GL (mismo formato que el Excel 'Budget
+#               Comparison Propiedad') — cuentas como '40120', '51013', etc.
+#
+# Usamos las pages 2+ (detalle JDE) porque tienen códigos GL → 100% match con
+# el catálogo de Walnut Street Wellesley (84 cuentas).
+
+
+def _is_nwep_pdf_format(filepath: Path) -> bool:
+    """
+    Detecta PDF de monthly report de NWEP / Walnut Street Wellesley.
+    Firma: page 1 contiene 'SUMMARY Newton Wellesley' Y page 2+ contiene
+    'WalnutStreetWellesley' (marker JDE detail).
+    """
+    if filepath.suffix.lower() != '.pdf':
+        return False
+    try:
+        import pdfplumber
+        with pdfplumber.open(str(filepath)) as pdf:
+            if len(pdf.pages) < 2:
+                return False
+            p1 = pdf.pages[0].extract_text() or ''
+            p2 = pdf.pages[1].extract_text() or ''
+            return ('SUMMARY Newton Wellesley' in p1 and
+                    'WalnutStreetWellesley' in p2.replace(' ', ''))
+    except Exception:
+        return False
+
+
+# Regex para data rows del JDE detail. Formato:
+#   <code5> <description (sin espacios)> <actual> <budget> <variance> <%var>
+#                                        <ytd_actual> <ytd_budget> <ytd_var> <%var_ytd>
+# Las descripciones vienen squeezed por el text-extract del PDF (RentalInc.-Commercial),
+# pero los números siempre van separados por espacios.
+_PDF_NUM = r'[\(\-]?[\d,]+\.\d+\)?'
+_PDF_PCT = r'-?[\d,]+\.\d+%?'
+_PDF_DATA_RE = re.compile(
+    rf'^(\d{{5}})\s+(.+?)\s+'
+    rf'({_PDF_NUM})\s+({_PDF_NUM})\s+({_PDF_NUM})\s+({_PDF_PCT})\s+'
+    rf'({_PDF_NUM})\s+({_PDF_NUM})\s+({_PDF_NUM})\s*({_PDF_PCT})?$'
+)
+# Regex para totales del JDE: empieza con TOTAL + 8 números (sin código)
+_PDF_TOTAL_RE = re.compile(
+    rf'^(TOTAL[\w&\s]+?)\s+'
+    rf'({_PDF_NUM})\s+({_PDF_NUM})\s+({_PDF_NUM})\s+({_PDF_PCT})\s+'
+    rf'({_PDF_NUM})\s+({_PDF_NUM})\s+({_PDF_NUM})\s*({_PDF_PCT})?$'
+)
+
+
+def _pdf_to_float(s: str) -> Optional[float]:
+    """Convierte string del PDF (con paréntesis para negativos) a float."""
+    if s is None:
+        return None
+    s = str(s).strip().replace(',', '').replace('$', '').replace('%', '')
+    if not s:
+        return None
+    if s.startswith('(') and s.endswith(')'):
+        s = '-' + s[1:-1]
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _ingest_nwep_pdf(filepath: Path) -> IngestedFile:
+    """
+    Parser para PDF monthly report de NWEP / Walnut Street Wellesley.
+
+    Extrae el detalle JDE de pages 2+ (no el SUMMARY de page 1) porque el
+    detalle tiene códigos GL que matchean 100% con el catálogo Walnut.
+
+    Layout pages 2+:
+      - Header rows con metadata (Database, ReportID, FormatID, fechas)
+      - Section headers en MAYÚSCULAS (REVENUES:, RENTALINCOME, OTHERINCOME,
+        OPERATINGEXPENSES, TAXES&INSURANCE, ADMINISTRATION, etc.)
+      - Data rows: <code5> <desc> <actual> <budget> <var> <%var> <YTDx4>
+      - Total rows: TOTAL<X> + 8 números
+    """
+    import pdfplumber
+    import datetime as _dt
+
+    rows = []
+    section_totals = []
+    partner_comments = []
+    period_label = ""
+    building = "Walnut Street Wellesley Owner LLC"
+
+    with pdfplumber.open(str(filepath)) as pdf:
+        # Período: page 1 line 1 (formato M/D/YYYY)
+        p1 = pdf.pages[0].extract_text() or ''
+        p1_lines = p1.split('\n')
+        if len(p1_lines) > 1:
+            m = re.search(r'(\d{1,2})/(\d{1,2})/(20\d{2})', p1_lines[1])
+            if m:
+                mo, day, yr = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                period_label = f"{yr}-{mo:02d}-{day:02d}"
+
+        # Page 1 SUMMARY trae NOI y Net Income que el JDE detail (pages 2+) NO tiene
+        # como totales — los extraemos para que figuren como L1 lines explícitos.
+        # Formato page 1: '<desc> <PTD_actual> <PTD_budget> <var> <%var> <YTD_actual>...'
+        SUMMARY_L1_TOTALS = ('Net Operating Income', 'Net Income')
+        summary_totals_extracted = []
+        for line in p1_lines:
+            line_s = line.strip()
+            for label in SUMMARY_L1_TOTALS:
+                if line_s.startswith(label + ' '):
+                    # Extraer los primeros 2 numéricos como actual_current / budget_current
+                    rest = line_s[len(label):].strip()
+                    nums = re.findall(rf'{_PDF_NUM}', rest)
+                    if len(nums) >= 6:  # PTD actual, PTD budget, var, %var, YTD actual, YTD budget
+                        summary_totals_extracted.append({
+                            'description': label,
+                            'actual_current': _pdf_to_float(nums[0]),
+                            'budget_current': _pdf_to_float(nums[1]),
+                            'actual_ytd': _pdf_to_float(nums[4]),
+                            'budget_ytd': _pdf_to_float(nums[5]),
+                        })
+                    break
+
+        # Procesar pages 2+ (JDE detail)
+        row_num = 0
+        for page in pdf.pages[1:]:
+            text = page.extract_text() or ''
+            for line in text.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Skip header lines (Database, PROJ, ReportID, etc.)
+                if any(line.startswith(prefix) for prefix in
+                       ('Database:', 'PROJ:', 'ReportID:', 'FormatID:',
+                        'LincolnPropertyCompany', 'Accrual',
+                        'CurrentPeriod', 'Actual', 'Thru:')):
+                    continue
+
+                row_num += 1
+
+                # Total row
+                m_tot = _PDF_TOTAL_RE.match(line)
+                if m_tot:
+                    desc = m_tot.group(1).strip()
+                    actual_c = _pdf_to_float(m_tot.group(2))
+                    budget_c = _pdf_to_float(m_tot.group(3))
+                    actual_y = _pdf_to_float(m_tot.group(6))
+                    budget_y = _pdf_to_float(m_tot.group(7))
+                    rows.append({
+                        'row_num': row_num, 'description': desc, 'account': "",
+                        'budget_current': budget_c, 'actual_current': actual_c,
+                        'budget_ytd': budget_y, 'actual_ytd': actual_y,
+                        'row_type': 'total', 'source_file': filepath.name,
+                    })
+                    section_totals.append({
+                        'description': desc,
+                        'budget_current': budget_c, 'actual_current': actual_c,
+                        'budget_ytd': budget_y, 'actual_ytd': actual_y,
+                        'row_num': row_num,
+                    })
+                    continue
+
+                # Data row
+                m_dat = _PDF_DATA_RE.match(line)
+                if m_dat:
+                    code = m_dat.group(1).strip()
+                    desc = m_dat.group(2).strip()
+                    actual_c = _pdf_to_float(m_dat.group(3))
+                    budget_c = _pdf_to_float(m_dat.group(4))
+                    actual_y = _pdf_to_float(m_dat.group(7))
+                    budget_y = _pdf_to_float(m_dat.group(8))
+                    rows.append({
+                        'row_num': row_num, 'description': desc, 'account': code,
+                        'budget_current': budget_c, 'actual_current': actual_c,
+                        'budget_ytd': budget_y, 'actual_ytd': actual_y,
+                        'row_type': 'data', 'source_file': filepath.name,
+                    })
+                    continue
+
+                # Section header: línea en mayúsculas, sin números
+                if (re.match(r'^[A-Z][A-Z&\s\-/:]+$', line)
+                        and 'PAGE' not in line.upper()
+                        and 'PERIOD' not in line.upper()):
+                    rows.append({
+                        'row_num': row_num, 'description': line.rstrip(':'), 'account': "",
+                        'budget_current': None, 'actual_current': None,
+                        'budget_ytd': None, 'actual_ytd': None,
+                        'row_type': 'section', 'source_file': filepath.name,
+                    })
+                    continue
+
+                # Otherwise: label
+                rows.append({
+                    'row_num': row_num, 'description': line, 'account': "",
+                    'budget_current': None, 'actual_current': None,
+                    'budget_ytd': None, 'actual_ytd': None,
+                    'row_type': 'label', 'source_file': filepath.name,
+                })
+
+        # Append NOI / Net Income totals extraídos de page 1 SUMMARY
+        for t in summary_totals_extracted:
+            row_num += 1
+            rows.append({
+                'row_num': row_num,
+                'description': t['description'],
+                'account': "",
+                'budget_current': t['budget_current'],
+                'actual_current': t['actual_current'],
+                'budget_ytd': t['budget_ytd'],
+                'actual_ytd': t['actual_ytd'],
+                'row_type': 'total',
+                'source_file': filepath.name,
+            })
+            section_totals.append({
+                'description': t['description'],
+                'budget_current': t['budget_current'],
+                'actual_current': t['actual_current'],
+                'budget_ytd': t['budget_ytd'],
+                'actual_ytd': t['actual_ytd'],
+                'row_num': row_num,
+            })
+
+    df = pd.DataFrame(rows)
+    return IngestedFile(
+        filename=filepath.name,
+        building=building,
+        period_label=period_label,
+        df=df,
+        partner_comments=partner_comments,
+        section_totals=section_totals,
+        metadata={
+            'header_row': None,
+            'total_rows': len(rows),
+            'data_rows': len([r for r in rows if r['row_type'] == 'data']),
+            'has_ytd': True,
+            'sheet_used': None,
+            'comments_sheet': None,
+            'format': 'NWEP-PDF',
+            'column_map': None,
+        }
+    )
+
+
 def ingest_single_file(filepath: Path, sheet_name: str = None, target_period: Optional[str] = None) -> IngestedFile:
     """
-    Ingiere un archivo .xlsm/.xlsx completo.
-    Detecta automáticamente la hoja del income statement (multi-sheet).
-    Extrae: datos, comentarios del socio, totales de sección, metadata.
+    Ingiere un archivo .xlsm/.xlsx/.pdf completo.
+    Detecta automáticamente la hoja del income statement (multi-sheet) o
+    delega a parsers específicos por formato.
 
     Args:
-        filepath: ruta al archivo Excel
-        sheet_name: si se especifica, usa esta hoja directamente (omite auto-detección)
+        filepath: ruta al archivo Excel o PDF
+        sheet_name: si se especifica, usa esta hoja directamente (omite auto-detección).
+                    Solo aplica a archivos Excel.
+        target_period: período seleccionado por el usuario (solo lo usan parsers
+                       multi-período como CWS).
     """
+    # --- DISPATCH PDF (antes de openpyxl, que no abre PDFs) ---
+    if filepath.suffix.lower() == '.pdf':
+        if _is_nwep_pdf_format(filepath):
+            return _ingest_nwep_pdf(filepath)
+        raise ValueError(
+            f"El archivo PDF '{filepath.name}' no coincide con ningún formato "
+            f"soportado. Hoy solo se soportan PDFs de NWEP/Walnut Street Wellesley "
+            f"(Campus at Newton Wellesley monthly reports). Para otros activos, "
+            f"subí el archivo en formato Excel."
+        )
+
     wb = openpyxl.load_workbook(str(filepath), data_only=True)
 
     # --- DETECCIÓN DE HOJAS ---

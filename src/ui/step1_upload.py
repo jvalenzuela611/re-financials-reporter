@@ -114,17 +114,18 @@ def render_step1():
 
     st.markdown("### Archivos del trimestre actual")
     files_current = st.file_uploader(
-        "Cargar Excel(s) del trimestre",
-        type=["xlsm", "xlsx"],
+        "Cargar archivos del trimestre (Excel o PDF)",
+        type=["xlsm", "xlsx", "pdf"],
         accept_multiple_files=True,
-        help="Carga los 3 archivos mensuales del trimestre (ej: Oct, Nov, Dec)",
+        help="Carga los 3 archivos mensuales del trimestre (ej: Oct, Nov, Dec). "
+             "PDF soportado para Walnut Street Wellesley (Campus at Newton Wellesley monthly report).",
         key="files_current",
     )
 
     with st.expander("📁 Trimestre anterior (opcional - para comparación QoQ)", expanded=False):
         files_prior = st.file_uploader(
-            "Cargar Excel(s) del trimestre anterior",
-            type=["xlsm", "xlsx"],
+            "Cargar archivos del trimestre anterior (Excel o PDF)",
+            type=["xlsm", "xlsx", "pdf"],
             accept_multiple_files=True,
             help="Para generar comparación trimestre vs trimestre anterior",
             key="files_prior",
