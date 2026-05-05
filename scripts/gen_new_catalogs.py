@@ -62,6 +62,39 @@ SECTION_MAP_501 = {
     'Construction in Progress-Routine Replacement': ('Total Capex', 'CapEx'),
 }
 
+SECTION_MAP_BLOCKYARD = {
+    # Income
+    'RENTAL INCOME':                          ('Income', 'Rental Income'),
+    'OTHER INCOME':                           ('Income', 'Other Income'),
+    # Operating Expenses
+    'PAYROLL & BENEFITS':                     ('Operating Expenses', 'Payroll and Related'),
+    'MARKETING & ADVERTISING':                ('Operating Expenses', 'Advertising and Marketing'),
+    'TURNOVER COSTS':                         ('Operating Expenses', 'Turnover'),
+    'REPAIRS & MAINTENANCE':                  ('Operating Expenses', 'Repairs and Maintenance'),
+    'PROFESSIONAL/CONTRACT SERVICES':         ('Operating Expenses', 'Contract Services'),
+    'GENERAL & ADMINISTRATIVE EXPENSES':      ('Operating Expenses', 'Property G & A'),
+    'UTILITIES':                              ('Operating Expenses', 'Utilities'),
+    'INSURANCE':                              ('Operating Expenses', 'Insurance'),
+    'MANAGEMENT FEES':                        ('Operating Expenses', 'Management Fees'),
+    # RET (separado L1)
+    'TAXES':                                  ('Real Estate Taxes', 'Property Taxes'),
+    # Below NOI
+    'DEBT SERVICE':                           ('Interest Expense', 'Interest and Financing Expenses'),
+    'OTHER NON-OPERATING COSTS':              ('Non-Operating Expenses', 'Company General & Administrative'),
+    'DEPRECIATION & AMORTIZATION':            ('Non-Operating Expenses', 'Depreciation/Amortization'),
+    # Capex
+    'INTERIOR IMPROVEMENTS':                  ('Total Capex', 'CapEx'),
+    'EXTERIOR IMPROVEMENTS':                  ('Total Capex', 'CapEx'),
+    'INTERIOR IMPROVEMENTS-UPFRONT':          ('Total Capex', 'CapEx'),
+    'FURNITURE/FIXTURES/EQUIPMENT-UPFRONT':   ('Total Capex', 'CapEx'),
+    'OTHER INTERIOR IMRPOVEMENTS-UPFRONT':    ('Total Capex', 'CapEx'),  # typo en el archivo
+    'EXTERIOR IMPROVEMENTS-UPFRONT':          ('Total Capex', 'CapEx'),
+    'BUILDINGS & IMPROVEMENTS-UPFRONT':       ('Total Capex', 'CapEx'),
+    'OTHER EXTERIOR IMPROVEMENTS-UPFRONT':    ('Total Capex', 'CapEx'),
+    'CAPITAL EXPENDITURES':                   ('Total Capex', 'CapEx'),
+}
+
+
 SECTION_MAP_YALE = {
     'Rental Revenue - Residential': ('Income', 'Rental Income'),
     'Rental Revenue Adjustments - Residential': ('Income', 'Concessions and Vacancy'),

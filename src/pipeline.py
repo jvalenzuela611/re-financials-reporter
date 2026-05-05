@@ -606,12 +606,17 @@ def run_pipeline(inputs: PipelineInput) -> dict:
     try:
         # --- 2. INGESTA ---
         try:
-            ingested_current = ingest_files(current_paths, sheet_selections=inputs.sheet_selections)
+            ingested_current = ingest_files(
+                current_paths,
+                sheet_selections=inputs.sheet_selections,
+                target_period=inputs.period,
+            )
         except Exception as e:
             raise ValueError(f"Error en ingesta de archivos actuales: {e}")
 
         try:
-            ingested_prior = ingest_files(prior_paths) if prior_paths else []
+            prior_period = _prev_period(inputs.period) if inputs.period else None
+            ingested_prior = ingest_files(prior_paths, target_period=prior_period) if prior_paths else []
         except Exception as e:
             warnings.append(f"Ingesta trimestre anterior: {e}")
             ingested_prior = []

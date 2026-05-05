@@ -604,6 +604,10 @@ ASSET_ALIASES = {
     "929 mass ave (838)": "929 Mass Ave (838)",
     "929 mass ave": "929 Mass Ave (838)",
     "929 mass": "929 Mass Ave (838)",
+    # Blockyard (CWS / Bridge at the Blockyard)
+    "bridge at the blockyard (a0111048)": "Bridge at the Blockyard",
+    "bridge at the blockyard": "Bridge at the Blockyard",
+    "blockyard": "Bridge at the Blockyard",
 }
 
 

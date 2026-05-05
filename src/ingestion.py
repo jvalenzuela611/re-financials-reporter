@@ -1251,6 +1251,261 @@ def _ingest_cmc_sheet(ws, filepath: Path, sheet_info: Dict) -> IngestedFile:
 
 
 # ─────────────────────────────────────────
+# FORMATO CWS / 12-MONTH BUDGET (Bridge at the Blockyard)
+# ─────────────────────────────────────────
+#
+# Layout: Yardi 12-month budget con 'Tree = cws_res_is_' (Carroll/Wells/Steele).
+# Firma: row 4 contiene 'Tree = cws_'. Cols A=código GL, B=descripción,
+# C-N = 12 meses (Jan-Dec), O = Total anual.
+#
+# A diferencia de YSI/CMC (que traen un período con Actual+Budget), este formato
+# es un BUDGET ANUAL — no hay actuals. La pipeline lo combina con un archivo
+# separado de actuals mensuales (ver Phase 2 — pendiente).
+#
+# Por defecto el parser extrae el TOTAL ANUAL (col O) como budget_current. Si
+# se le pasa target_period (ej. 'Q1 2026' o 'Mar 2026'), suma los meses
+# correspondientes para budget_current y los meses YTD para budget_ytd.
+
+def _is_cws_format(ws) -> bool:
+    """
+    Detecta formato CWS (Bridge at the Blockyard y similares).
+    Firma: row 4 contiene 'Tree = cws_<algo>'.
+    """
+    max_r = min(ws.max_row or 0, 6)
+    for r in range(1, max_r + 1):
+        v = ws.cell(row=r, column=1).value
+        if v is None:
+            continue
+        s = str(v).lower()
+        if 'tree' in s and '=' in s and 'cws_' in s:
+            return True
+    return False
+
+
+def _parse_cws_target_period(target_period: Optional[str], file_year: int) -> Tuple[Optional[List[int]], Optional[List[int]]]:
+    """
+    Convierte target_period a (current_months, ytd_months) para el año del archivo.
+    Retorna (None, None) si no se puede parsear o el año no coincide → caller
+    usará el default (annual).
+
+    Ejemplos (file_year=2026):
+      'Q1 2026'      → ([1,2,3], [1,2,3])
+      'Q3 2026'      → ([7,8,9], [1..9])
+      'Mar 2026'     → ([3], [1,2,3])
+      'October 2026' → ([10], [1..10])
+      'Q1 2025'      → (None, None)  # año no coincide
+    """
+    if not target_period:
+        return None, None
+
+    s = str(target_period).strip().lower()
+
+    # Extraer año del period
+    year_match = re.search(r'\b(20\d{2})\b', s)
+    period_year = int(year_match.group(1)) if year_match else None
+    if period_year is not None and period_year != file_year:
+        return None, None
+
+    # Q1-Q4
+    q_match = re.search(r'\bq([1-4])\b', s)
+    if q_match:
+        q = int(q_match.group(1))
+        end_month = q * 3
+        current = list(range(end_month - 2, end_month + 1))
+        ytd = list(range(1, end_month + 1))
+        return current, ytd
+
+    # Mes único (jan-dec o january-december o "01"-"12")
+    month_names = {
+        'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
+        'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6,
+        'jul': 7, 'july': 7, 'aug': 8, 'august': 8, 'sep': 9, 'september': 9,
+        'oct': 10, 'october': 10, 'nov': 11, 'november': 11, 'dec': 12, 'december': 12,
+    }
+    for name, mnum in month_names.items():
+        if re.search(rf'\b{name}\b', s):
+            return [mnum], list(range(1, mnum + 1))
+
+    # Fallback YYYY-MM o MM-YYYY
+    m = re.search(r'\b(20\d{2})[-_./](\d{1,2})\b', s) or re.search(r'\b(\d{1,2})[-_./](20\d{2})\b', s)
+    if m:
+        # Determinar cuál grupo es el mes
+        g1, g2 = m.group(1), m.group(2)
+        mnum = int(g2) if len(g1) == 4 else int(g1)
+        if 1 <= mnum <= 12:
+            return [mnum], list(range(1, mnum + 1))
+
+    return None, None
+
+
+def _ingest_cws_sheet(ws, filepath: Path, sheet_info: Dict, target_period: Optional[str] = None) -> IngestedFile:
+    """
+    Parser para formato CWS 12-month budget (Bridge at the Blockyard).
+
+    Layout:
+      - Row 1, col A: 'Bridge at the Blockyard (a0111048)' (building name)
+      - Row 3, col A: 'Period = Jan 2026-Dec 2026'
+      - Row 4, col A: 'Book = Accrual ; Tree = cws_res_is_'
+      - Row 5: cols C-N = meses Jan-Dec, col O = 'Total'
+      - Row 6+: data rows con código GL en col A, descripción en col B,
+                12 meses en cols C-N, total anual en col O.
+      - Section/total rows: col A vacía, col B con texto.
+
+    Si target_period viene con un Q o mes (ej. 'Q1 2026', 'Mar 2026'), el
+    parser suma los meses correspondientes para budget_current y budget_ytd.
+    Si no, usa el TOTAL ANUAL como budget_current.
+
+    actual_current y actual_ytd son SIEMPRE None — este archivo es budget-only.
+    Los actuals deben venir de un archivo separado y la pipeline merge por
+    account_code (Phase 2 — pendiente).
+    """
+    # Building & año
+    building = ""
+    v1 = ws.cell(row=1, column=1).value
+    if v1:
+        building = str(v1).strip()
+
+    file_year = None
+    v3 = ws.cell(row=3, column=1).value
+    if v3:
+        m = re.search(r'\b(20\d{2})\b', str(v3))
+        if m:
+            file_year = int(m.group(1))
+
+    # Determinar columnas a sumar según target_period
+    # Cols 3-14 = Jan-Dec, col 15 = Total
+    current_months, ytd_months = (None, None)
+    if file_year is not None:
+        current_months, ytd_months = _parse_cws_target_period(target_period, file_year)
+
+    # Si no hay target_period o no se pudo parsear → annual total (col 15)
+    use_annual = current_months is None
+
+    if use_annual:
+        period_label = f"Annual {file_year}" if file_year else "Annual"
+    else:
+        period_label = str(target_period).strip()
+
+    # Layout fijo
+    desc_col = 2  # col B
+    acct_col = 1  # col A
+    month_first_col = 3  # Jan en col C
+    annual_total_col = 15  # col O
+    header_row = 5
+
+    rows = []
+    section_totals = []
+    partner_comments = []
+
+    max_row = ws.max_row or 250
+    for i in range(header_row + 1, max_row + 1):
+        c1 = ws.cell(row=i, column=acct_col).value
+        c2 = ws.cell(row=i, column=desc_col).value
+
+        # Saltar filas completamente vacías
+        if c1 is None and c2 is None:
+            continue
+
+        acct_str = str(c1).strip() if c1 is not None else ""
+        desc_str = str(c2).strip() if c2 is not None else ""
+
+        is_acct_code = bool(re.match(r'^\d{4}-\d{4}$', acct_str))
+        desc_upper = desc_str.upper()
+
+        # Determinar tipo de fila
+        if is_acct_code and desc_str:
+            row_type = 'data'
+        elif desc_str and not acct_str:
+            # section o total — totales empiezan con TOTAL/NET/INCOME
+            if (desc_upper.startswith('TOTAL ') or desc_upper.startswith('NET ')
+                    or desc_upper.startswith('INCOME (LOSS)')):
+                row_type = 'total'
+            else:
+                row_type = 'section'
+        else:
+            row_type = 'label'
+
+        # Calcular budget_current y budget_ytd según target_period
+        budget_curr_val = None
+        budget_ytd_val = None
+        if row_type in ('data', 'total'):
+            if use_annual:
+                v = ws.cell(row=i, column=annual_total_col).value
+                budget_curr_val = _to_float(v)
+                budget_ytd_val = budget_curr_val  # annual = ytd
+            else:
+                # Sumar meses específicos
+                cur_sum = 0.0
+                cur_any = False
+                for m in current_months:
+                    v = ws.cell(row=i, column=month_first_col + m - 1).value
+                    fv = _to_float(v)
+                    if fv is not None:
+                        cur_sum += fv
+                        cur_any = True
+                ytd_sum = 0.0
+                ytd_any = False
+                for m in ytd_months:
+                    v = ws.cell(row=i, column=month_first_col + m - 1).value
+                    fv = _to_float(v)
+                    if fv is not None:
+                        ytd_sum += fv
+                        ytd_any = True
+                budget_curr_val = cur_sum if cur_any else None
+                budget_ytd_val = ytd_sum if ytd_any else None
+
+        rows.append({
+            'row_num': i,
+            'description': desc_str,
+            'account': acct_str if is_acct_code else "",
+            'budget_current': budget_curr_val,
+            'actual_current': None,           # budget-only file
+            'budget_ytd': budget_ytd_val,
+            'actual_ytd': None,
+            'row_type': row_type,
+            'source_file': filepath.name,
+        })
+
+        if row_type == 'total':
+            section_totals.append({
+                'description': desc_str,
+                'budget_current': budget_curr_val,
+                'actual_current': None,
+                'budget_ytd': budget_ytd_val,
+                'actual_ytd': None,
+                'row_num': i,
+            })
+
+    df = pd.DataFrame(rows)
+    return IngestedFile(
+        filename=filepath.name,
+        building=building,
+        period_label=period_label,
+        df=df,
+        partner_comments=partner_comments,
+        section_totals=section_totals,
+        metadata={
+            'header_row': header_row,
+            'total_rows': len(rows),
+            'data_rows': len([r for r in rows if r['row_type'] == 'data']),
+            'has_ytd': True,
+            'sheet_used': sheet_info.get('income_statement'),
+            'comments_sheet': None,
+            'format': 'CWS',
+            'is_budget_reference': True,        # marker para Phase 2 (merge con actuals)
+            'file_year': file_year,
+            'extracted_period': period_label,
+            'extracted_months_current': current_months,
+            'extracted_months_ytd': ytd_months,
+            'column_map': {
+                'desc_col': desc_col, 'acct_col': acct_col,
+                'month_first_col': month_first_col, 'annual_total_col': annual_total_col,
+            },
+        }
+    )
+
+
+# ─────────────────────────────────────────
 # FORMATO YSI / YARDI BUDGET FORECAST (The Wilcox y similares)
 # ─────────────────────────────────────────
 
@@ -1906,7 +2161,7 @@ def _ingest_callan_sheet(ws, filepath: Path, sheet_info: Dict) -> IngestedFile:
     )
 
 
-def ingest_single_file(filepath: Path, sheet_name: str = None) -> IngestedFile:
+def ingest_single_file(filepath: Path, sheet_name: str = None, target_period: Optional[str] = None) -> IngestedFile:
     """
     Ingiere un archivo .xlsm/.xlsx completo.
     Detecta automáticamente la hoja del income statement (multi-sheet).
@@ -1936,6 +2191,13 @@ def ingest_single_file(filepath: Path, sheet_name: str = None) -> IngestedFile:
     # falsos positivos cruzados.
     if _is_nwep_summary_format(ws):
         result = _ingest_nwep_summary_sheet(ws, filepath, sheet_info)
+        wb.close()
+        return result
+
+    # CWS / 12-month budget (Bridge at the Blockyard). Detección por marker
+    # 'Tree = cws_*' en row 4 — muy específica, sin falsos positivos.
+    if _is_cws_format(ws):
+        result = _ingest_cws_sheet(ws, filepath, sheet_info, target_period=target_period)
         wb.close()
         return result
 
@@ -2089,7 +2351,7 @@ def ingest_single_file(filepath: Path, sheet_name: str = None) -> IngestedFile:
     )
 
 
-def ingest_files(filepaths: List[Path], sheet_selections: Dict[str, List[str]] = None) -> List[IngestedFile]:
+def ingest_files(filepaths: List[Path], sheet_selections: Dict[str, List[str]] = None, target_period: Optional[str] = None) -> List[IngestedFile]:
     """
     Ingiere múltiples archivos.
 
@@ -2097,6 +2359,9 @@ def ingest_files(filepaths: List[Path], sheet_selections: Dict[str, List[str]] =
         filepaths: lista de rutas a archivos Excel
         sheet_selections: dict {filename: [sheet_name, ...]} para workbooks multi-hoja.
                           Si un archivo no está en el dict, se usa auto-detección.
+        target_period: período seleccionado por el usuario (ej. 'Q1 2026', 'Mar 2026').
+                       Solo lo usan parsers que soportan archivos multi-período (ej. CWS
+                       12-month budget); los demás lo ignoran.
     """
     results = []
     for fp in filepaths:
@@ -2104,13 +2369,13 @@ def ingest_files(filepaths: List[Path], sheet_selections: Dict[str, List[str]] =
         if sheets:
             for sheet in sheets:
                 try:
-                    result = ingest_single_file(fp, sheet_name=sheet)
+                    result = ingest_single_file(fp, sheet_name=sheet, target_period=target_period)
                     results.append(result)
                 except Exception as e:
                     raise ValueError(f"Error procesando {fp.name} [{sheet}]: {str(e)}")
         else:
             try:
-                result = ingest_single_file(fp)
+                result = ingest_single_file(fp, target_period=target_period)
                 results.append(result)
             except Exception as e:
                 raise ValueError(f"Error procesando {fp.name}: {str(e)}")
