@@ -2407,6 +2407,205 @@ def _ingest_nwep_pdf(filepath: Path) -> IngestedFile:
     )
 
 
+# ─────────────────────────────────────────
+# FORMATO PDF — J 501 ESTATES CLOSE PACKAGE
+# ─────────────────────────────────────────
+#
+# Close Package mensual de Jefferson Apartment Group (JAG) para J 501 Estates.
+# El PDF contiene multiples reportes; usamos:
+#   - "Budget Comparison Report": mismas filas que el Excel BCR
+#     (codigos GL formato XXXX-XXXX, columnas Actual / Budget / Diff / %Var
+#     para Month Ending y Year To Date).
+#   - "Variance Report W/Notes": comentarios de los socios por cuenta
+#     (columna "Variance Comments").
+
+
+def _is_j501_pdf_format(filepath: Path) -> bool:
+    """
+    Detecta PDF Close Package de J 501 Estates (JAG Management).
+    Firma: page 1 contiene 'J 501 Estates' Y existe una pagina con
+    'Budget Comparison Report'.
+    """
+    if filepath.suffix.lower() != '.pdf':
+        return False
+    try:
+        import pdfplumber
+        with pdfplumber.open(str(filepath)) as pdf:
+            if not pdf.pages:
+                return False
+            p1 = pdf.pages[0].extract_text() or ''
+            if 'J 501 Estates' not in p1 and '501 Estates Apartment' not in p1:
+                return False
+            for page in pdf.pages[:25]:
+                t = page.extract_text() or ''
+                if 'Budget Comparison Report' in t:
+                    return True
+        return False
+    except Exception:
+        return False
+
+
+# Linea de datos del BCR en texto PDF:
+#   "3110-1110 - Market Rent  471,922.00 481,766.00 (9,844.00) (2.04) 471,922.00 481,766.00 (9,844.00) (2.04)"
+_J501_DATA_RE = re.compile(
+    r'^\s*(\d{4}-\d{4})\s*-\s*(.+?)\s+'
+    r'(\(?-?[\d,]+\.\d{2}\)?)\s+(\(?-?[\d,]+\.\d{2}\)?)\s+'
+    r'(\(?-?[\d,]+\.\d{2}\)?)\s+(\(?-?[\d,]+\.\d{2}\)?)\s+'
+    r'(\(?-?[\d,]+\.\d{2}\)?)\s+(\(?-?[\d,]+\.\d{2}\)?)\s+'
+    r'(\(?-?[\d,]+\.\d{2}\)?)\s*(\(?-?[\d,]+\.\d{2}\)?)?\s*$'
+)
+# Linea de Total con descripcion + 8 numeros
+_J501_TOTAL_RE = re.compile(
+    r'^\s*(Total\s+[A-Za-z][\w &\-/]*?|Net Operating Income|Net Income|'
+    r'Net Income After Capital Expenditures(?: and Non-Operating Expenses)?|'
+    r'Total Operating Expenses|Total Non-Operating Expenses)\s+'
+    r'(\(?-?[\d,]+\.\d{2}\)?)\s+(\(?-?[\d,]+\.\d{2}\)?)\s+'
+    r'(\(?-?[\d,]+\.\d{2}\)?)\s+(\(?-?[\d,]+\.\d{2}\)?)\s+'
+    r'(\(?-?[\d,]+\.\d{2}\)?)\s+(\(?-?[\d,]+\.\d{2}\)?)\s+'
+    r'(\(?-?[\d,]+\.\d{2}\)?)\s*(\(?-?[\d,]+\.\d{2}\)?)?\s*$'
+)
+
+
+def _ingest_j501_pdf(filepath: Path) -> IngestedFile:
+    """
+    Parser para Close Package PDF de J 501 Estates.
+
+    Extrae el Budget Comparison Report (paginas con codigos GL XXXX-XXXX) y
+    los comentarios de socios del Variance Report W/Notes.
+    """
+    import pdfplumber
+
+    rows = []
+    section_totals = []
+    partner_comments = []
+    period_label = ""
+    building = "J 501 Estates"
+    in_bcr = False
+    section_current = ""
+    row_num = 0
+
+    # Reutilizamos el extractor del skill para los comentarios de socios
+    try:
+        import sys as _sys
+        scripts_path = r"C:\Users\JaimeValenzuela\OneDrive - Stars Investment\Escritorio\Proyecto Ale\scripts-re\scripts"
+        if scripts_path not in _sys.path:
+            _sys.path.insert(0, scripts_path)
+        from extraer_j501 import extract_j501 as _extract_j501
+        ext = _extract_j501(str(filepath))
+        for c in ext.get('comentarios', []):
+            partner_comments.append({
+                'account': c.get('cuenta', '').split(' - ')[0] if c.get('cuenta') else '',
+                'description': c.get('cuenta', ''),
+                'comment': c.get('comentario', ''),
+                'actual_ytd': c.get('ytd_actual'),
+                'budget_ytd': c.get('ytd_budget'),
+                'variance_ytd': c.get('ytd_var'),
+            })
+        if ext.get('as_of_date'):
+            mm = re.match(r'(\d{1,2})/(\d{1,2})/(\d{4})', ext['as_of_date'])
+            if mm:
+                period_label = f"{mm.group(3)}-{int(mm.group(1)):02d}-{int(mm.group(2)):02d}"
+    except Exception:
+        pass
+
+    with pdfplumber.open(str(filepath)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ''
+            if 'Budget Comparison Report' in text:
+                in_bcr = True
+                # extraer fecha si esta visible (e.g., '01/31/26')
+                if not period_label:
+                    md = re.search(r'(\d{2})/(\d{2})/(\d{2,4})', text)
+                    if md:
+                        mo, dd, yr = md.group(1), md.group(2), md.group(3)
+                        if len(yr) == 2:
+                            yr = '20' + yr
+                        period_label = f"{yr}-{int(mo):02d}-{int(dd):02d}"
+            if not in_bcr:
+                continue
+            # Si entramos a otra seccion del Close Package, salir del BCR
+            if any(marker in text for marker in (
+                'Income Statement', 'Trial Balance Report', 'Reconciliation Report',
+                'Revenue v Collections', 'Deposits v Collections', 'Loan Escrow',
+                'DELINQUENT AND PREPAID', 'Vendor Aging', 'RESIDENT DEPOSIT AUDIT',
+                'RECONCILIATION SUMMARY', 'RENT ROLL DETAIL',
+            )):
+                in_bcr = False
+                continue
+
+            for raw in text.split('\n'):
+                line = raw.rstrip()
+                if not line.strip():
+                    continue
+                m = _J501_DATA_RE.match(line)
+                if m:
+                    row_num += 1
+                    acct = m.group(1)
+                    desc = m.group(2).strip()
+                    actual_c = _to_float(m.group(3))
+                    budget_c = _to_float(m.group(4))
+                    actual_y = _to_float(m.group(7))
+                    budget_y = _to_float(m.group(8))
+                    rows.append({
+                        'row_num': row_num,
+                        'description': desc,
+                        'account': acct,
+                        'budget_current': budget_c,
+                        'actual_current': actual_c,
+                        'budget_ytd': budget_y,
+                        'actual_ytd': actual_y,
+                        'row_type': 'data',
+                        'source_file': filepath.name,
+                    })
+                    continue
+                mt = _J501_TOTAL_RE.match(line)
+                if mt:
+                    row_num += 1
+                    desc = mt.group(1).strip()
+                    actual_c = _to_float(mt.group(2))
+                    budget_c = _to_float(mt.group(3))
+                    actual_y = _to_float(mt.group(6))
+                    budget_y = _to_float(mt.group(7))
+                    rows.append({
+                        'row_num': row_num,
+                        'description': desc,
+                        'account': '',
+                        'budget_current': budget_c,
+                        'actual_current': actual_c,
+                        'budget_ytd': budget_y,
+                        'actual_ytd': actual_y,
+                        'row_type': 'total',
+                        'source_file': filepath.name,
+                    })
+                    section_totals.append({
+                        'description': desc,
+                        'budget_current': budget_c,
+                        'actual_current': actual_c,
+                        'budget_ytd': budget_y,
+                        'actual_ytd': actual_y,
+                        'row_num': row_num,
+                    })
+
+    df = pd.DataFrame(rows)
+    return IngestedFile(
+        filename=filepath.name,
+        building=building,
+        period_label=period_label,
+        df=df,
+        partner_comments=partner_comments,
+        section_totals=section_totals,
+        metadata={
+            'total_rows': len(rows),
+            'data_rows': len([r for r in rows if r['row_type'] == 'data']),
+            'has_ytd': True,
+            'sheet_used': None,
+            'comments_sheet': None,
+            'format': 'J501-PDF',
+            'column_map': None,
+        }
+    )
+
+
 def ingest_single_file(filepath: Path, sheet_name: str = None, target_period: Optional[str] = None) -> IngestedFile:
     """
     Ingiere un archivo .xlsm/.xlsx/.pdf completo.
@@ -2424,11 +2623,13 @@ def ingest_single_file(filepath: Path, sheet_name: str = None, target_period: Op
     if filepath.suffix.lower() == '.pdf':
         if _is_nwep_pdf_format(filepath):
             return _ingest_nwep_pdf(filepath)
+        if _is_j501_pdf_format(filepath):
+            return _ingest_j501_pdf(filepath)
         raise ValueError(
             f"El archivo PDF '{filepath.name}' no coincide con ningún formato "
-            f"soportado. Hoy solo se soportan PDFs de NWEP/Walnut Street Wellesley "
-            f"(Campus at Newton Wellesley monthly reports). Para otros activos, "
-            f"subí el archivo en formato Excel."
+            f"soportado. Hoy se soportan PDFs de NWEP/Walnut Street Wellesley "
+            f"(Campus at Newton Wellesley monthly reports) y de J 501 Estates "
+            f"(JAG Close Package). Para otros activos, subí el archivo en formato Excel."
         )
 
     wb = openpyxl.load_workbook(str(filepath), data_only=True)
