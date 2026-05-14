@@ -6,12 +6,29 @@ Uso: streamlit run app.py
 """
 
 import streamlit as st
+import traceback as _traceback
+import sys as _sys
 
-from src.ui.styles import inject_styles
-from src.ui.sidebar import render_sidebar
-from src.ui.step1_upload import render_step1
-from src.ui.step2_review import render_step2
-from src.ui.step3_output import render_step3
+# Diagnostic wrapper: if any module import or top-level execution fails,
+# surface the full traceback inside the Streamlit UI (otherwise Cloud just
+# shows "Oh no." and hides the error). Comment-out once stable if desired.
+try:
+    from src.ui.styles import inject_styles
+    from src.ui.sidebar import render_sidebar
+    from src.ui.step1_upload import render_step1
+    from src.ui.step2_review import render_step2
+    from src.ui.step3_output import render_step3
+except Exception:
+    st.set_page_config(page_title="STARS REI - Diagnostic", layout="wide")
+    st.error("Import error en los modulos de la app. Ver traceback abajo:")
+    st.code(_traceback.format_exc(), language="python")
+    st.write("Python version:", _sys.version)
+    try:
+        import pandas, numpy
+        st.write("pandas:", pandas.__version__, "numpy:", numpy.__version__)
+    except Exception:
+        pass
+    st.stop()
 
 
 # ── Configuración de página ──────────────────────────────────
