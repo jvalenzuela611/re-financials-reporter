@@ -2420,6 +2420,188 @@ def _ingest_nwep_pdf(filepath: Path) -> IngestedFile:
 #     (columna "Variance Comments").
 
 
+def _extract_j501_variance_comments(filepath: Path) -> List[Dict]:
+    """
+    Extrae comentarios del socio del 'Variance Report W/Notes' del Close
+    Package de J 501 Estates.
+
+    pdfplumber ordena el texto por coordenada Y, lo que en este PDF hace que
+    el comentario aparezca en la LINEA ANTES (a veces tambien ABAJO o pegado)
+    de la fila de la cuenta — por eso recolectamos linea-arriba + glued + linea-abajo.
+
+    Devuelve dicts con las keys que espera native_structure.py:
+      account_code, description, comment_text, source_file.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return []
+
+    NUM_TOK = re.compile(r"^-?\(?[\d,]+(?:\.\d+)?\)?$|^\(-?[\d,]+(?:\.\d+)?\)$")
+    ACCT_RX = re.compile(r"^\s*(\d{4}-\d{4})\s*-?\s*(.*)$")
+
+    def _to_money(s):
+        if s is None:
+            return None
+        s = str(s).strip().replace(",", "").replace("$", "")
+        if s in ("", "-"):
+            return 0.0
+        neg = s.startswith("(") and s.endswith(")")
+        s = s.strip("()")
+        if s.startswith("-"):
+            neg = True
+            s = s[1:]
+        try:
+            v = float(s)
+        except ValueError:
+            return None
+        return -v if neg else v
+
+    def _is_comment_line(s):
+        s = (s or "").strip()
+        if not s:
+            return False
+        if ACCT_RX.match(s):
+            return False
+        if re.match(
+            r"^(Total |Net |Sub|Income|Expense|Page |Month Ending|Operating |Year To|"
+            r"VARIANCE|Location|As of|Actual |Rental |Other |Payroll |General |Repairs|"
+            r"Make|Recreational|Contract |Advertising|Utilities|Management|Taxes|"
+            r"Insurance|Partnership|Debt |Depreciation|Construction|Non-)", s
+        ):
+            return False
+        if "Greater than" in s or "Budget %" in s or "% Var" in s:
+            return False
+        if re.match(r"^[\-\d,\.\s\(\)%\$]+$", s):
+            return False
+        if re.search(r"MTD|YTD|\$\d|vs\.|paint|written off|@|account|budget", s, re.I):
+            return True
+        if re.match(r"^[A-Z][a-z]", s) and " " in s:
+            return True
+        return False
+
+    comentarios: List[Dict] = []
+    seen = set()
+
+    try:
+        with pdfplumber.open(str(filepath)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                if "VARIANCE REPORT" not in text.upper() and "Variance Comments" not in text:
+                    continue
+                lines = text.split("\n")
+                consumed = set()
+
+                for i, ln in enumerate(lines):
+                    m = ACCT_RX.match(ln)
+                    if not m:
+                        continue
+                    code = m.group(1)
+                    rest = m.group(2)
+                    toks = rest.split()
+
+                    # account name = tokens before first numeric
+                    name_toks = []
+                    idx = 0
+                    while idx < len(toks):
+                        t = toks[idx]
+                        if NUM_TOK.match(t):
+                            break
+                        if re.match(r"^-?[\d,]+\.\d+\$", t):
+                            break
+                        name_toks.append(t)
+                        idx += 1
+                    if not name_toks:
+                        continue
+                    cuenta = f"{code} - " + " ".join(name_toks)
+
+                    # numeric tokens
+                    num_toks = []
+                    while idx < len(toks) and NUM_TOK.match(toks[idx]):
+                        num_toks.append(toks[idx])
+                        idx += 1
+                    if len(num_toks) < 4:
+                        continue
+
+                    # comment glued on same line
+                    glued_remainder = " ".join(toks[idx:]).strip()
+                    glued = []
+                    for t in toks:
+                        if re.search(r"\d[A-Za-z\$]|[A-Za-z]\$", t):
+                            mg = re.search(r"([\$A-Za-z].+)$", t)
+                            if mg:
+                                glued.append(mg.group(1))
+                    glued_text = " ".join(glued).strip()
+
+                    parts = []
+                    used = []
+                    # line(s) ABOVE
+                    if i - 1 >= 0 and i - 1 not in consumed and _is_comment_line(lines[i-1]):
+                        if (i - 2 >= 0 and i - 2 not in consumed
+                                and _is_comment_line(lines[i-2])
+                                and not ACCT_RX.match(lines[i-2].strip())):
+                            parts.append(lines[i-2].strip())
+                            used.append(i-2)
+                        parts.append(lines[i-1].strip())
+                        used.append(i-1)
+                    if glued_remainder:
+                        parts.append(glued_remainder)
+                    elif glued_text:
+                        parts.append(glued_text)
+
+                    # below continuation: only if mid-sentence
+                    if parts:
+                        current = " ".join(parts).strip()
+                        if not current.rstrip().endswith((".", "!", "?")):
+                            for j in range(i + 1, min(i + 3, len(lines))):
+                                if j in consumed:
+                                    break
+                                nxt = lines[j].strip()
+                                if not nxt:
+                                    continue
+                                if ACCT_RX.match(nxt):
+                                    break
+                                if re.match(r"^[\-\d,\.\s\(\)%\$]+$", nxt):
+                                    break
+                                if re.match(r"^(Total |Net |Page |Month Ending|VARIANCE|Location|As of|Operating |Year To)", nxt):
+                                    break
+                                parts.append(nxt)
+                                used.append(j)
+                                if nxt.rstrip().endswith((".", "!", "?")):
+                                    break
+
+                    if not parts:
+                        continue
+                    comentario = re.sub(r"\s+", " ", " ".join(parts)).strip()
+                    # cleanup: separar numero pegado a $ o letras
+                    comentario = re.sub(r"(-?\d+\.?\d*)\$", r"\1 $", comentario)
+                    comentario = re.sub(r"(-?\d+\.\d+)([A-Za-z])", r"\1 \2", comentario)
+                    comentario = re.sub(r"^-?\d+\.\d+\s+(?=[\$A-Z])", "", comentario)
+                    comentario = re.sub(r"\s+", " ", comentario).strip()
+                    if len(comentario) < 8:
+                        continue
+                    if re.match(r"^[\-\d,\.\s\(\)%\$]+$", comentario):
+                        continue
+
+                    key = (cuenta, comentario[:60])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    for u in used:
+                        consumed.add(u)
+
+                    comentarios.append({
+                        "account_code": code,
+                        "description": cuenta,
+                        "comment_text": comentario,
+                        "source_file": filepath.name,
+                    })
+    except Exception:
+        return comentarios
+
+    return comentarios
+
+
 def _is_j501_pdf_format(filepath: Path) -> bool:
     """
     Detecta PDF Close Package de J 501 Estates (JAG Management).
@@ -2484,27 +2666,23 @@ def _ingest_j501_pdf(filepath: Path) -> IngestedFile:
     section_current = ""
     row_num = 0
 
-    # Reutilizamos el extractor del skill para los comentarios de socios
+    # Extractor inline de comentarios del Variance Report W/Notes.
+    # Mismo algoritmo que scripts-re/extraer_j501.py — inlineado para que
+    # funcione en Streamlit Cloud (donde no existe el path local del skill).
+    partner_comments = _extract_j501_variance_comments(filepath)
+    # Tomar la as-of date del primer page header
     try:
-        import sys as _sys
-        scripts_path = r"C:\Users\JaimeValenzuela\OneDrive - Stars Investment\Escritorio\Proyecto Ale\scripts-re\scripts"
-        if scripts_path not in _sys.path:
-            _sys.path.insert(0, scripts_path)
-        from extraer_j501 import extract_j501 as _extract_j501
-        ext = _extract_j501(str(filepath))
-        for c in ext.get('comentarios', []):
-            partner_comments.append({
-                'account': c.get('cuenta', '').split(' - ')[0] if c.get('cuenta') else '',
-                'description': c.get('cuenta', ''),
-                'comment': c.get('comentario', ''),
-                'actual_ytd': c.get('ytd_actual'),
-                'budget_ytd': c.get('ytd_budget'),
-                'variance_ytd': c.get('ytd_var'),
-            })
-        if ext.get('as_of_date'):
-            mm = re.match(r'(\d{1,2})/(\d{1,2})/(\d{4})', ext['as_of_date'])
-            if mm:
-                period_label = f"{mm.group(3)}-{int(mm.group(1)):02d}-{int(mm.group(2)):02d}"
+        import pdfplumber as _pp
+        with _pp.open(str(filepath)) as _pdf:
+            for _p in _pdf.pages[:5]:
+                _t = _p.extract_text() or ''
+                _m = re.search(r'As [oO]f Date[: ]+(\d{1,2})/(\d{1,2})/(\d{2,4})', _t)
+                if _m:
+                    _mo, _dd, _yr = _m.group(1), _m.group(2), _m.group(3)
+                    if len(_yr) == 2:
+                        _yr = '20' + _yr
+                    period_label = f"{_yr}-{int(_mo):02d}-{int(_dd):02d}"
+                    break
     except Exception:
         pass
 
