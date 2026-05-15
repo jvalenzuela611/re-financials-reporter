@@ -367,6 +367,13 @@ def _apply_l1_overrides(structure: dict, overrides: dict):
             section.actual_current = 0
             section.variance_current = 0
             section.variance_pct_current = None
+            # Bug fix: cuando la sección queda vacía tambien hay que cerar YTD
+            # (mismo origen que el bug del L1: dejaba YTD con el valor viejo).
+            if section.budget_ytd is not None or section.actual_ytd is not None:
+                section.budget_ytd = 0
+                section.actual_ytd = 0
+                section.variance_ytd = 0
+                section.variance_pct_ytd = None
             continue
 
         # Recalcular valores de la sección desde sus hijos L3 (solo los que aún pertenecen)
@@ -424,7 +431,12 @@ def _apply_l1_overrides(structure: dict, overrides: dict):
                 if l1.budget_current and abs(l1.budget_current) > 0.01
                 else None
             )
-            if s['budget_ytd'] or s['actual_ytd']:
+            # Bug fix: el gate previo era `if s['budget_ytd'] or s['actual_ytd']`,
+            # que cuando una reclasificación dejaba el L1 en CERO exacto (caso
+            # Total Capex tras mover 8901/8935/8996 a OpEx) saltaba el update y
+            # el YTD quedaba con el valor viejo. Ahora actualizamos siempre que
+            # el L1 tenía YTD originalmente.
+            if l1.budget_ytd is not None or l1.actual_ytd is not None:
                 l1.budget_ytd = s['budget_ytd']
                 l1.actual_ytd = s['actual_ytd']
                 l1.variance_ytd = l1.actual_ytd - l1.budget_ytd
@@ -444,6 +456,13 @@ def _apply_l1_overrides(structure: dict, overrides: dict):
         if new_l1_name not in l1_sums:
             continue
         s = l1_sums[new_l1_name]
+        # Bug fix: si CUALQUIER L3 hijo de este nuevo L1 tiene YTD, propagar
+        # el YTD (aunque la suma sea 0). El gate previo `or` filtraba ceros.
+        children_have_ytd = any(
+            a.actual_ytd is not None or a.budget_ytd is not None
+            for a in structure.get('l3_accounts', [])
+            if a.parent_line == new_l1_name
+        )
         new_line = FinancialLine(
             name=new_l1_name,
             level=1,
@@ -454,9 +473,9 @@ def _apply_l1_overrides(structure: dict, overrides: dict):
                 (s['actual_current'] - s['budget_current']) / abs(s['budget_current'])
                 if s['budget_current'] and abs(s['budget_current']) > 0.01 else None
             ),
-            budget_ytd=s['budget_ytd'] if s['budget_ytd'] or s['actual_ytd'] else None,
-            actual_ytd=s['actual_ytd'] if s['budget_ytd'] or s['actual_ytd'] else None,
-            variance_ytd=(s['actual_ytd'] - s['budget_ytd']) if s['budget_ytd'] or s['actual_ytd'] else None,
+            budget_ytd=s['budget_ytd'] if children_have_ytd else None,
+            actual_ytd=s['actual_ytd'] if children_have_ytd else None,
+            variance_ytd=(s['actual_ytd'] - s['budget_ytd']) if children_have_ytd else None,
             variance_pct_ytd=None,
             parent_line=new_l1_name,
             classification_source='user_override',
