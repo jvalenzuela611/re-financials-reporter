@@ -37,7 +37,19 @@ def _preview_file_period(file) -> tuple:
         data = file.read()
         file.seek(0)
         wb = openpyxl.load_workbook(_io.BytesIO(data), data_only=True, read_only=True)
-        for sheet_name in wb.sheetnames[:5]:  # primeras 5 hojas max
+        # Saltar hojas tipo 'Comments' / 'Notes' / etc. al buscar fecha — el caso
+        # 929 Mass tiene una hoja "Comments" con fechas en filas iniciales que
+        # antes confundia la deteccion (la fuente quedaba mal aunque el ingestor
+        # despues elegia bien la hoja del IS).
+        _SKIP_PREVIEW = ('comment', 'comentario', 'note', 'notas', 'variance note',
+                         'explanation', 'cover', 'instruction', 'instructions')
+        ordered = sorted(
+            wb.sheetnames[:8],
+            key=lambda n: any(k in n.lower() for k in _SKIP_PREVIEW),
+        )
+        for sheet_name in ordered:
+            if any(k in sheet_name.lower() for k in _SKIP_PREVIEW):
+                continue
             ws = wb[sheet_name]
             for i, row in enumerate(ws.iter_rows(values_only=True), start=1):
                 if i > 10:

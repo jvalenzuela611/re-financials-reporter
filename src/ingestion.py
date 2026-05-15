@@ -72,6 +72,17 @@ def _score_sheet_as_income_statement(ws, sheet_name: str) -> float:
         if re.search(pattern, name_lower):
             score -= 20
 
+    # Penalizacion fuerte si el nombre de la hoja es exactamente una keyword
+    # de comments / notes (caso 929 Mass: la hoja "Comments" tiene fechas en
+    # filas iniciales y antes ganaba el scoring contra Budget Comparison).
+    for ckw in _COMMENTS_KEYWORDS:
+        if name_lower == ckw or name_lower.startswith(ckw + ' ') or name_lower.endswith(' ' + ckw):
+            score -= 80
+            break
+        if ckw in name_lower and 'budget' not in name_lower and 'income' not in name_lower:
+            score -= 40
+            break
+
     # Bonus por nombre descriptivo
     if any(kw in name_lower for kw in ['income', 'p&l', 'p & l', 'profit', 'loss',
                                          'estado', 'resultado', 'financial',
