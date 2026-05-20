@@ -1360,12 +1360,27 @@ ASSET_CATALOGS = {
             '1318-413': {"desc": 'RENO - CONSTRUCTION MGMT FEE', "l1": 'Total Capex', "l2": 'Capex/Adjustments'},
             '1318-530': {"desc": 'GENERAL OTHER UPGRADES', "l1": 'Total Capex', "l2": 'Capex/Adjustments'},
             '5120-000': {"desc": 'GROSS POTENTIAL RENT', "l1": 'Income', "l2": 'Rental'},
+            '5129-000': {"desc": 'TERMINATION FEE', "l1": 'Income', "l2": 'Rental'},
             '5140-000': {"desc": 'STORE & COMMERCIAL', "l1": 'Income', "l2": 'Rental'},
             '5170-000': {"desc": 'PARKING', "l1": 'Income', "l2": 'Rental'},
             '5171-000': {"desc": 'GARAGE PARKING', "l1": 'Income', "l2": 'Rental'},
+            '5174-000': {"desc": 'LATE FEE INCOME', "l1": 'Income', "l2": 'Rental'},
+            '5180-000': {"desc": 'PET FEE INCOME', "l1": 'Income', "l2": 'Rental'},
+            '5185-000': {"desc": 'CABLE INCOME', "l1": 'Income', "l2": 'Service Income'},
             '5190-001': {"desc": 'MISCELLANEOUS INCOME-OTHER', "l1": 'Income', "l2": 'Rental'},
+            '5190-002': {"desc": 'MISCELLANEOUS INCOME-NSF FEES', "l1": 'Income', "l2": 'Rental'},
+            '5190-003': {"desc": 'MISCELLANEOUS INCOME-MTM', "l1": 'Income', "l2": 'Rental'},
+            '5190-007': {"desc": 'MISCELLANEOUS INCOME-KEY', "l1": 'Income', "l2": 'Rental'},
             '5220-000': {"desc": 'Vacancy', "l1": 'Income', "l2": 'Vacancy'},
             '5240-000': {"desc": 'Vacancy- Store & Commercial', "l1": 'Income', "l2": 'Vacancy'},
+            # 5305-000 WATER / SEWER INCOME aparece en la seccion "Utility Expense"
+            # del budget como contra a las utilities (reduce el costo neto).
+            '5305-000': {"desc": 'WATER / SEWER INCOME', "l1": 'Operating Expenses', "l2": 'Utilities'},
+            '5325-000': {"desc": 'RENTERS INSURANCE INC-RISK RELEASE', "l1": 'Income', "l2": 'Service Income'},
+            # 5410-000 INTEREST INCOME esta en "Financial Income" del budget, que es
+            # parte de TOTAL Income (arriba de NOI). Mantengo bajo Income para que
+            # cuadre con el total del socio.
+            '5410-000': {"desc": 'INTEREST INCOME', "l1": 'Income', "l2": 'Financial Income'},
             '5411-000': {"desc": 'INTERST INCOME ESCROWS', "l1": 'Non-Operating Expenses', "l2": 'Non-Operating'},
             '6209-000': {"desc": 'MINORITY HANDICAPPED ADVERTISE', "l1": 'Operating Expenses', "l2": 'Renting'},
             '6212-001': {"desc": 'BROKER COMMISSIONS', "l1": 'Operating Expenses', "l2": 'Renting'},
