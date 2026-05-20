@@ -128,6 +128,13 @@ def render_step2():
 
     if _pl_recon:
         recon_rows = []
+        # Formulas que se muestran para las lineas calculadas (UX feedback Florencia):
+        # antes mostraban "None" en Suma L3/Dif/#Ctas porque son derivadas, no
+        # tienen L3s propias. Ahora explicitamos la formula.
+        _CALC_FORMULAS = {
+            'NOI': 'Calculado: Income − OpEx − RET',
+            'Net Income': 'Calculado: NOI − Interest − Non-Op',
+        }
         for row in _pl_recon['per_l1']:
             if row['status'] == 'calc':
                 status_icon = 'ℹ️'
@@ -138,14 +145,25 @@ def render_step2():
             else:
                 status_icon = '❌'
 
-            recon_rows.append({
-                'Línea L1': row['line'],
-                'Total Socio': row['partner_total'],
-                'Suma L3 (Clasificación)': row['classification_sum'],
-                'Diferencia': row['diff'],
-                '# Cuentas': row['account_count'],
-                'Status': status_icon,
-            })
+            if row['status'] == 'calc':
+                formula = _CALC_FORMULAS.get(row['line'], 'Línea derivada (sin L3 directas)')
+                recon_rows.append({
+                    'Línea L1': row['line'],
+                    'Total Socio': row['partner_total'],
+                    'Suma L3 (Clasificación)': formula,
+                    'Diferencia': '—',
+                    '# Cuentas': '—',
+                    'Status': status_icon,
+                })
+            else:
+                recon_rows.append({
+                    'Línea L1': row['line'],
+                    'Total Socio': row['partner_total'],
+                    'Suma L3 (Clasificación)': row['classification_sum'],
+                    'Diferencia': row['diff'],
+                    '# Cuentas': row['account_count'],
+                    'Status': status_icon,
+                })
 
         # NOTA: Se removió la fila "TOTAL P&L" (feedback Florencia 23-04-2026):
         # mezclaba Total Capex con líneas P&L y enredaba la lectura.
@@ -162,7 +180,14 @@ def render_step2():
             })
 
         recon_df = pd.DataFrame(recon_rows)
-        numeric_fmt = lambda v: f"${v:,.0f}" if isinstance(v, (int, float)) and v is not None else "—"
+        # Si el valor es numerico, formatear como USD. Si es string (caso de
+        # las lineas calculadas que muestran la formula), dejarlo tal cual.
+        def numeric_fmt(v):
+            if isinstance(v, (int, float)) and v is not None:
+                return f"${v:,.0f}"
+            if isinstance(v, str) and v:
+                return v
+            return "—"
         st.dataframe(
             recon_df.style.format({
                 'Total Socio': numeric_fmt,
