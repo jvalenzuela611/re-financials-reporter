@@ -772,8 +772,20 @@ def render_step2():
     # ---- Comentarios del socio ----
     comments_df = results['comments_df']
     if not comments_df.empty:
-        with st.expander(f"💬 Comentarios del socio ({len(comments_df)} notas)", expanded=False):
+        with st.expander(f"💬 Comentarios del socio ({len(comments_df)} notas)", expanded=True):
             st.dataframe(comments_df, width="stretch")
+    else:
+        # Mensaje explicito cuando hay 0 comentarios: facilita debugging cuando el
+        # extractor por activo no detecto las variance notes (caso Walnut/NWEP-PDF
+        # donde los comentarios viven en la pagina 'LPC - Commercial / Project
+        # Operating Report' al final del Monthly Report).
+        st.info(
+            "💬 No se extrajeron comentarios del socio para estos archivos. "
+            "Si el reporte del partner contiene Variance Notes y deberian aparecer aqui, "
+            "verifica que los archivos cargados incluyen la pagina del Variance Report / "
+            "LPC Commercial Project Operating Report (no solo la pagina del SUMMARY o "
+            "Income Statement)."
+        )
 
     # ---- Botones ----
     st.markdown("---")
