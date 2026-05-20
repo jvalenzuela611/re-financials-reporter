@@ -2242,6 +2242,111 @@ def _pdf_to_float(s: str) -> Optional[float]:
         return None
 
 
+def _extract_nwep_lpc_comments(pdf) -> List[Dict]:
+    """
+    Extrae variance comments del 'LPC - Commercial / Project Operating Report'
+    (paginas al final del Monthly Report de Walnut). Layout:
+
+      DESCRIPTION  ACCOUNT#  CUR_Actual  CUR_Budget  *VARIANCE  COMMENTS_CUR  YTD_Actual  YTD_Budget  *VARIANCE  COMMENTS_YTD
+
+    Heuristica: por cada linea con un account de 5 digitos, tokeniza, ignora
+    los numeros y captura las palabras-texto entre bloques numericos como
+    comentario. Las continuaciones (lineas sin account, solo texto narrativo)
+    se anexan al ultimo comentario. Dedupe trivial cuando MTD y YTD repiten
+    el mismo comentario (caso de Enero donde MTD = YTD).
+    """
+    NUM_RE = re.compile(r'^\(?-?[\d,]+\.\d{2}\)?$|^-$|^\d+$')
+    out = []
+    last_row = None
+    for page in pdf.pages:
+        text = page.extract_text() or ''
+        if 'Project Operating Report' not in text and 'LPC - Commercial' not in text:
+            continue
+        for raw in text.split('\n'):
+            line = raw.rstrip()
+            if not line.strip():
+                continue
+            # Saltar headers, separadores, totales y secciones
+            stripped = line.strip()
+            if (stripped.startswith('-') or stripped.startswith('=')
+                or 'Project Operating Report' in stripped
+                or stripped.startswith('LPC -') or stripped.startswith('ACCOUNT')
+                or stripped.startswith('DESCRIPTION')):
+                continue
+            m = re.search(r'\b(\d{5})\b', line)
+            if not m:
+                # continuacion de comentario para la fila anterior. Solo si:
+                # - hay last_row
+                # - la linea NO tiene 2+ numericos (descarta subtotales como
+                #   "Net Rental Income 303,561.09 332,237.65 ..." que pdfplumber
+                #   no reconoce como cuenta pero es un section total)
+                # - empieza con texto en minuscula o sigue una oracion previa
+                tokens = stripped.split() if stripped else []
+                num_tokens = [t for t in tokens if NUM_RE.match(t)]
+                text_tokens = [t for t in tokens if not NUM_RE.match(t)]
+                if (last_row and tokens and len(num_tokens) < 2 and len(text_tokens) >= 2
+                        and not NUM_RE.match(tokens[0])
+                        # Heuristica: continuacion suele empezar con minuscula
+                        # o tras una oracion sin punto final
+                        and (tokens[0][0].islower()
+                             or not last_row['comment_text'].rstrip().endswith(('.', '!', '?')))):
+                    # Saltar si la linea parece un section header
+                    upper = stripped.upper()
+                    if not any(h in upper for h in (
+                        'NET RENTAL INCOME', 'TOTAL ', 'RECOVERY INCOME', 'OTHER INCOME',
+                        'NON-OPERATING', 'NON OPERATING', 'OPERATING EXPENSES',
+                        'PROFESSIONAL FEES', 'MANAGEMENT FEES', 'INSURANCE', 'REAL ESTATE TAX',
+                        'PROJECT ADMIN', 'INCOME', 'EXPENSES', 'REVENUES',
+                    )):
+                        extra = ' '.join(text_tokens)
+                        if extra and extra not in last_row['comment_text']:
+                            last_row['comment_text'] = (last_row['comment_text'] + ' ' + extra).strip()
+                continue
+            desc = line[:m.start()].strip()
+            acct = m.group(1)
+            rest = line[m.end():].strip()
+            tokens = rest.split()
+            # agrupa runs de texto entre numericos
+            comments_segments = []
+            current_seg = []
+            for tok in tokens:
+                if NUM_RE.match(tok):
+                    if current_seg:
+                        comments_segments.append(' '.join(current_seg))
+                        current_seg = []
+                else:
+                    current_seg.append(tok)
+            if current_seg:
+                comments_segments.append(' '.join(current_seg))
+            # filtrar segmentos triviales (1 char, '$', etc.)
+            comments_segments = [s.strip(' ,;') for s in comments_segments]
+            comments_segments = [s for s in comments_segments if len(s) >= 4 and re.search(r'[A-Za-z]', s)]
+            # dedupe segmentos iguales (caso MTD = YTD en Enero)
+            seen = set()
+            unique = []
+            for s in comments_segments:
+                if s not in seen:
+                    seen.add(s)
+                    unique.append(s)
+            comment_text = ' / '.join(unique)
+            # Limpiar artefactos de pdfplumber: numero pegado a letras al inicio
+            comment_text = re.sub(r'^\(?-?[\d,]+\.?\d*\)?\s*', '', comment_text)
+            comment_text = re.sub(r'(-?\d+\.\d+)([A-Za-z])', r'\1 \2', comment_text)
+            comment_text = comment_text.strip()
+            if not comment_text:
+                last_row = None
+                continue
+            row = {
+                'account_code': acct,
+                'description': desc,
+                'comment_text': comment_text,
+                'source_file': '',  # se rellena en el caller
+            }
+            out.append(row)
+            last_row = row
+    return out
+
+
 def _ingest_nwep_pdf(filepath: Path) -> IngestedFile:
     """
     Parser para PDF monthly report de NWEP / Walnut Street Wellesley.
@@ -2274,6 +2379,16 @@ def _ingest_nwep_pdf(filepath: Path) -> IngestedFile:
             if m:
                 mo, day, yr = int(m.group(1)), int(m.group(2)), int(m.group(3))
                 period_label = f"{yr}-{mo:02d}-{day:02d}"
+
+        # Variance comments del LPC Commercial Project Operating Report (paginas finales).
+        # Algunos monthly reports los incluyen, otros no — si no estan, lista vacia.
+        try:
+            lpc_comments = _extract_nwep_lpc_comments(pdf)
+            for c in lpc_comments:
+                c['source_file'] = filepath.name
+                partner_comments.append(c)
+        except Exception:
+            pass
 
         # Page 1 SUMMARY trae NOI y Net Income que el JDE detail (pages 2+) NO tiene
         # como totales — los extraemos para que figuren como L1 lines explícitos.
